@@ -10,6 +10,8 @@ import re
 import datetime
 import io
 import os
+import time
+import mimetypes
 
 # Налаштування Gemini API через Streamlit Secrets
 try:
@@ -68,8 +70,6 @@ def process_document_with_gemini(file_path):
 
 def process_packing_lists(file_paths):
     try:
-        uploaded_docs = [genai.upload_file(path=fp) for fp in file_paths]
-        
         model = genai.GenerativeModel(model_name="gemini-2.5-flash")
         prompt = """
         You are a logistics data extraction assistant. Analyze packing list images representing multiple boxes on a pallet.
@@ -98,8 +98,22 @@ def process_packing_lists(file_paths):
         }
         """
         
-        content_request = [prompt] + uploaded_docs
-        response = model.model.generate_content(content_request) if hasattr(model, 'model') else model.generate_content(content_request)
+        content_request = [prompt]
+        
+        for fp in file_paths:
+            mime_type, _ = mimetypes.guess_type(fp)
+            if mime_type == 'application/pdf':
+                # PDF файли вимагають використання File API
+                uploaded_doc = genai.upload_file(path=fp)
+                content_request.append(uploaded_doc)
+                time.sleep(3)  # Пауза для уникнення ліміту запитів
+            else:
+                # Зображення передаються безпосередньо у запиті (0 додаткових API викликів)
+                with open(fp, "rb") as f:
+                    doc_data = f.read()
+                content_request.append({"mime_type": mime_type or "image/jpeg", "data": doc_data})
+        
+        response = model.generate_content(content_request)
         
         json_text = response.text
         json_match = re.search(r'```json\n(.*?)\n```', json_text, re.DOTALL)
