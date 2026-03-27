@@ -27,8 +27,8 @@ except KeyError:
 st.set_page_config(page_title="WHO Warehouse OCR & Automation", layout="wide")
 
 def api_call_with_retry(func, *args, **kwargs):
-    """Виконує API-виклик з автоматичним очікуванням при 429 помилці."""
-    max_retries = 3
+    """Виконує API-виклик з жорстким очікуванням при 429 помилці."""
+    max_retries = 5
     for attempt in range(max_retries):
         try:
             return func(*args, **kwargs)
@@ -36,10 +36,11 @@ def api_call_with_retry(func, *args, **kwargs):
             error_str = str(e)
             if "429" in error_str or "Quota exceeded" in error_str:
                 if attempt < max_retries - 1:
-                    # Пошук точного часу затримки, який вимагає сервер
                     match = re.search(r'retry_delay\s*\{\s*seconds:\s*(\d+)\s*\}', error_str)
-                    wait_time = int(match.group(1)) + 2 if match else 35
-                    st.warning(f"⏳ Ліміт Free Tier. Автоматичне очікування {wait_time} сек (спроба {attempt + 1}/{max_retries})...")
+                    wait_time = int(match.group(1)) + 5 if match else 60
+                    # Free Tier оновлюється кожну хвилину. Примусово чекаємо 60 секунд.
+                    wait_time = max(wait_time, 60)
+                    st.toast(f"⏳ Ліміт API. Очікування {wait_time} сек... (Спроба {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                 else:
                     raise e
@@ -366,7 +367,6 @@ with tab2:
             if pl_data and "items" in pl_data and len(pl_data["items"]) > 0:
                 df_pl = pd.DataFrame(pl_data["items"])
                 
-                # Форматування назв колонок
                 df_pl = df_pl.rename(columns={
                     "carton_no": "Carton no.",
                     "item_no": "Item no.",
@@ -379,9 +379,7 @@ with tab2:
                     "exp_date": "Exp. date"
                 })
                 
-                # Визначення суворого порядку колонок
                 cols = ["Carton no.", "Item no.", "Quantity", "Packing unit", "Item description UKR", "Item description ENG", "Batch no.", "Man. date", "Exp. date"]
-                # Додавання порожніх колонок, якщо ШІ їх пропустив
                 for col in cols:
                     if col not in df_pl.columns:
                         df_pl[col] = ""
@@ -390,7 +388,6 @@ with tab2:
                 st.success("Extraction complete!")
                 st.dataframe(df_pl, use_container_width=True)
                 
-                # Генерація Excel з відступами та заголовками
                 excel_buffer_pl = io.BytesIO()
                 with pd.ExcelWriter(excel_buffer_pl, engine='openpyxl') as writer:
                     df_pl.to_excel(writer, index=False, startrow=2)
@@ -400,7 +397,6 @@ with tab2:
                     module_batch = pl_data.get('module_batch', '')
                     batch_text = f"batch: {module_batch}" if module_batch else ""
                     
-                    # Запис у 5-ту колонку (E), рядки 1 і 2
                     worksheet.cell(row=1, column=5, value=module_name)
                     worksheet.cell(row=2, column=5, value=batch_text)
                     
