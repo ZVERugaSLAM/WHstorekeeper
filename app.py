@@ -267,14 +267,16 @@ if 'extracted_data' in st.session_state:
         # Відображення кнопок завантаження
         st.markdown("---")
         st.subheader("📥 Download Generated Files")
-        col_btn1, col_btn2 = st.columns(2)
+        # Створюємо три колонки: дві вузькі для кнопок і одну широку порожню
+        col_btn1, col_btn2, col_empty = st.columns([1.5, 1.5, 7]) 
         
         with col_btn1:
             st.download_button(
                 label="Download Excel Database",
                 data=excel_buffer,
                 file_name=f"{base_name}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
             )
             
         with col_btn2:
@@ -282,7 +284,8 @@ if 'extracted_data' in st.session_state:
                 label="Download WRR Document",
                 data=word_buffer,
                 file_name=f"WRR_{base_name}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True
             )
         
         st.markdown("---")
