@@ -27,8 +27,8 @@ except KeyError:
 st.set_page_config(page_title="WHO Warehouse OCR & Automation", layout="wide")
 
 def api_call_with_retry(func, *args, **kwargs):
-    """Виконує API-виклик з жорстким очікуванням при 429 помилці."""
-    max_retries = 5
+    """Виконує API-виклик з очікуванням при 429 помилці."""
+    max_retries = 3
     for attempt in range(max_retries):
         try:
             return func(*args, **kwargs)
@@ -37,8 +37,7 @@ def api_call_with_retry(func, *args, **kwargs):
             if "429" in error_str or "Quota exceeded" in error_str:
                 if attempt < max_retries - 1:
                     match = re.search(r'retry_delay\s*\{\s*seconds:\s*(\d+)\s*\}', error_str)
-                    wait_time = int(match.group(1)) + 5 if match else 60
-                    wait_time = max(wait_time, 60)
+                    wait_time = int(match.group(1)) + 5 if match else 20
                     st.toast(f"⏳ Ліміт API. Очікування {wait_time} сек... (Спроба {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                 else:
@@ -50,8 +49,7 @@ def process_document_with_gemini(file_path):
     try:
         uploaded_doc = api_call_with_retry(genai.upload_file, path=file_path)
         
-        # Змінено модель на gemini-1.5-flash
-        model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+        model = genai.GenerativeModel(model_name="gemini-2.5-flash")
         prompt = """
         You are a logistics assistant at WHO. Analyze the scanned warehouse documents.
         Extract the following data and return it STRICTLY in VALID JSON format.
@@ -91,8 +89,7 @@ def process_document_with_gemini(file_path):
 
 def process_packing_lists(file_paths):
     try:
-        # Змінено модель на gemini-1.5-flash
-        model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+        model = genai.GenerativeModel(model_name="gemini-2.5-flash")
         prompt = """
         You are a logistics data extraction assistant. Analyze packing list images representing multiple boxes on a pallet.
         Extract the general module information and ALL listed items across all provided pages.
@@ -127,7 +124,7 @@ def process_packing_lists(file_paths):
             if mime_type == 'application/pdf':
                 uploaded_doc = api_call_with_retry(genai.upload_file, path=fp)
                 content_request.append(uploaded_doc)
-                time.sleep(2) # Додаткова затримка для зменшення навантаження від PDF
+                time.sleep(2)
             else:
                 with open(fp, "rb") as f:
                     doc_data = f.read()
