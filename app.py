@@ -26,9 +26,29 @@ except KeyError:
 
 st.set_page_config(page_title="WHO Warehouse OCR & Automation", layout="wide")
 
+def api_call_with_retry(func, *args, **kwargs):
+    """Виконує API-виклик з автоматичним очікуванням при 429 помилці."""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "Quota exceeded" in error_str:
+                if attempt < max_retries - 1:
+                    # Пошук точного часу затримки, який вимагає сервер
+                    match = re.search(r'retry_delay\s*\{\s*seconds:\s*(\d+)\s*\}', error_str)
+                    wait_time = int(match.group(1)) + 2 if match else 35
+                    st.warning(f"⏳ Ліміт Free Tier. Автоматичне очікування {wait_time} сек (спроба {attempt + 1}/{max_retries})...")
+                    time.sleep(wait_time)
+                else:
+                    raise e
+            else:
+                raise e
+
 def process_document_with_gemini(file_path):
     try:
-        uploaded_doc = genai.upload_file(path=file_path)
+        uploaded_doc = api_call_with_retry(genai.upload_file, path=file_path)
         
         model = genai.GenerativeModel(model_name="gemini-2.5-flash")
         prompt = """
@@ -50,7 +70,7 @@ def process_document_with_gemini(file_path):
         "exp_date", "quantity", "number_of_parcels", "supplier_name", "invoice_info"
         """
         
-        response = model.generate_content([prompt, uploaded_doc])
+        response = api_call_with_retry(model.generate_content, [prompt, uploaded_doc])
         
         json_text = response.text
         json_match = re.search(r'```json\n(.*?)\n```', json_text, re.DOTALL)
@@ -103,17 +123,14 @@ def process_packing_lists(file_paths):
         for fp in file_paths:
             mime_type, _ = mimetypes.guess_type(fp)
             if mime_type == 'application/pdf':
-                # PDF файли вимагають використання File API
-                uploaded_doc = genai.upload_file(path=fp)
+                uploaded_doc = api_call_with_retry(genai.upload_file, path=fp)
                 content_request.append(uploaded_doc)
-                time.sleep(3)  # Пауза для уникнення ліміту запитів
             else:
-                # Зображення передаються безпосередньо у запиті (0 додаткових API викликів)
                 with open(fp, "rb") as f:
                     doc_data = f.read()
                 content_request.append({"mime_type": mime_type or "image/jpeg", "data": doc_data})
         
-        response = model.generate_content(content_request)
+        response = api_call_with_retry(model.generate_content, content_request)
         
         json_text = response.text
         json_match = re.search(r'```json\n(.*?)\n```', json_text, re.DOTALL)
