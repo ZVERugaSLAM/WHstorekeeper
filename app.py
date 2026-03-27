@@ -296,4 +296,27 @@ Goods have been successfully received at the {wh} warehouse.<br>
 The data has been extracted and transferred to Farmasoft for balance registration.</p>
 
 <table border="1" style="border-collapse: collapse; width: 100%; max-width: 1000px; border-color: gray;">
-<tr style="background-color: rgba(128, 128, 128, 0.2
+<tr style="background-color: rgba(128, 128, 128, 0.2);">
+<th style="padding: 8px; text-align: left;">PO</th>
+<th style="padding: 8px; text-align: left;">Order request</th>
+<th style="padding: 8px; text-align: left;">Requester</th>
+<th style="padding: 8px; text-align: left;">Item Name [ENG]</th>
+<th style="padding: 8px; text-align: left;">Batch</th>
+<th style="padding: 8px; text-align: left;">Expiry date</th>
+<th style="padding: 8px; text-align: left;">Total Quantity Inbound</th>
+</tr>
+<tr>
+<td style="padding: 8px;">{po_number}</td>
+<td style="padding: 8px;">{or_number}</td>
+<td style="padding: 8px;">{requester}</td>
+<td style="padding: 8px;">{item_name_eng}</td>
+<td style="padding: 8px;">{batch}</td>
+<td style="padding: 8px;">{exp_date}</td>
+<td style="padding: 8px;">{quantity}</td>
+</tr>
+</table>
+</div>
+"""
+        
+        st.markdown(email_html, unsafe_allow_html=True)
+        st.info("💡 Highlight the text and table above, press Ctrl+C, and paste it into your Outlook email body.")
