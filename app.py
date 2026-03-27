@@ -9,6 +9,7 @@ import tempfile
 import re
 import datetime
 import io
+import os # Додано імпорт модуля os
 
 # Налаштування Gemini API через Streamlit Secrets
 try:
@@ -182,6 +183,8 @@ st.title("📦 WHO Warehouse OCR & Automation")
 
 uploaded_file = st.file_uploader("Upload document scan (PDF, JPG, PNG)", type=['pdf', 'png', 'jpg'])
 
+temp_file_path = None
+
 if uploaded_file is not None:
     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as temp_file:
         temp_file.write(uploaded_file.read())
@@ -191,7 +194,7 @@ if uploaded_file is not None:
         with st.spinner("Analyzing document via Gemini..."):
             st.session_state['extracted_data'] = process_document_with_gemini(temp_file_path)
             
-    if os.path.exists(temp_file_path):
+    if temp_file_path and os.path.exists(temp_file_path):
         os.remove(temp_file_path)
 
 if 'extracted_data' in st.session_state:
