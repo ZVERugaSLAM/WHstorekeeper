@@ -13,6 +13,10 @@ import os
 import time
 import mimetypes
 
+# Нові імпорти для форматування Excel
+from openpyxl.styles import Alignment, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
+
 # Налаштування Gemini API через Streamlit Secrets
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
@@ -24,7 +28,7 @@ except KeyError:
     st.error("Змінна GEMINI_API_KEY не знайдена у secrets.toml.")
     st.stop()
 
-st.set_page_config(page_title="WHO Warehouse OCR & Automation", layout="wide")
+st.set_page_config(page_title="WHO Warehouse OCR", layout="wide", page_icon="📦")
 
 def api_call_with_retry(func, *args, **kwargs):
     """Виконує API-виклик з очікуванням при 429 помилці."""
@@ -48,7 +52,6 @@ def api_call_with_retry(func, *args, **kwargs):
 def process_document_with_gemini(file_path):
     try:
         uploaded_doc = api_call_with_retry(genai.upload_file, path=file_path)
-        
         model = genai.GenerativeModel(model_name="gemini-2.5-flash")
         prompt = """
         You are a logistics assistant at WHO. Analyze the scanned warehouse documents.
@@ -68,20 +71,15 @@ def process_document_with_gemini(file_path):
         "act_number", "po_number", "item_name_eng", "item_name_ukr", "batch",
         "exp_date", "quantity", "number_of_parcels", "supplier_name", "invoice_info"
         """
-        
         response = api_call_with_retry(model.generate_content, [prompt, uploaded_doc])
-        
         json_text = response.text
         json_match = re.search(r'```json\n(.*?)\n```', json_text, re.DOTALL)
         if json_match:
             json_text = json_match.group(1)
-            
         data = json.loads(json_text)
-        
         manual_fields = ["or_number", "who_item_code", "project", "task", "award", "award_end_date", "donor", "requester", "wh"]
         for field in manual_fields:
             data[field] = ""
-            
         return data
     except Exception as e:
         st.error(f"OCR Error: {e}")
@@ -116,9 +114,7 @@ def process_packing_lists(file_paths):
           ]
         }
         """
-        
         content_request = [prompt]
-        
         for fp in file_paths:
             mime_type, _ = mimetypes.guess_type(fp)
             if mime_type == 'application/pdf':
@@ -129,14 +125,11 @@ def process_packing_lists(file_paths):
                 with open(fp, "rb") as f:
                     doc_data = f.read()
                 content_request.append({"mime_type": mime_type or "image/jpeg", "data": doc_data})
-        
         response = api_call_with_retry(model.generate_content, content_request)
-        
         json_text = response.text
         json_match = re.search(r'```json\n(.*?)\n```', json_text, re.DOTALL)
         if json_match:
             json_text = json_match.group(1)
-            
         data = json.loads(json_text)
         return data
     except Exception as e:
@@ -151,6 +144,7 @@ def set_cell_text(cell, text, bold=False):
 def generate_files_in_memory(data):
     base_name = f"PO_{data.get('po_number', 'XXX')}_Act_{data.get('act_number', 'XXX')}".replace("/", "-")
     
+    # Створення Excel для WRR
     excel_buffer = io.BytesIO()
     df = pd.DataFrame([{
         "ACT": data.get('act_number'), "PO": data.get('po_number'), "OR": data.get('or_number'),
@@ -161,12 +155,45 @@ def generate_files_in_memory(data):
         "Award end date": data.get('award_end_date'), "Donor": data.get('donor'), 
         "Requester": data.get('requester'), "WH": data.get('wh')
     }])
-    df.to_excel(excel_buffer, index=False)
+    
+    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='WRR')
+        worksheet = writer.sheets['WRR']
+        
+        # Стилі WRR
+        header_fill = PatternFill(start_color='92D050', end_color='92D050', fill_type='solid')
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+
+        # Форматування шапки (рядок 1)
+        for cell in worksheet[1]:
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.border = thin_border
+
+        # Форматування даних
+        for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row):
+            for cell in row:
+                cell.border = thin_border
+                col_name = df.columns[cell.column - 1]
+                if col_name in ["Item Name [UKR]", "Item Name [ENG]"]:
+                    cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                else:
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
+
+        # Автодобір ширини стовпців
+        for i, col in enumerate(df.columns):
+            col_letter = get_column_letter(i + 1)
+            col_len = max([len(str(x)) for x in df[col].values] + [len(str(col))])
+            worksheet.column_dimensions[col_letter].width = min(col_len + 2, 50)
+
+        # Фільтр
+        worksheet.auto_filter.ref = worksheet.dimensions
+
     excel_buffer.seek(0)
     
+    # Створення Word (WRR)
     word_buffer = io.BytesIO()
     doc = Document()
-    
     style = doc.styles['Normal']
     style.font.name = 'Arial'
     style.font.size = Pt(12)
@@ -179,7 +206,6 @@ def generate_files_in_memory(data):
     p_title.runs[0].font.size = Pt(16)
     p_title.add_run('RECEIVING REPORT AND ACCEPTANCE INFORMATION').bold = True
     p_title.runs[1].font.size = Pt(14)
-    
     doc.add_paragraph()
     
     header_table = doc.add_table(rows=6, cols=2)
@@ -195,7 +221,6 @@ def generate_files_in_memory(data):
     set_cell_text(header_table.cell(4, 1), "All [ ] ; Partial [ ]")
     set_cell_text(header_table.cell(5, 0), "Supplier name:")
     set_cell_text(header_table.cell(5, 1), f"{data.get('supplier_name', '')}")
-    
     doc.add_paragraph()
     
     p_decl = doc.add_paragraph()
@@ -212,7 +237,6 @@ def generate_files_in_memory(data):
     set_cell_text(sign_table.cell(2, 1), "")
     set_cell_text(sign_table.cell(3, 0), "Date:")
     set_cell_text(sign_table.cell(3, 1), current_date)
-    
     doc.add_paragraph()
     
     p_remarks = doc.add_paragraph()
@@ -221,12 +245,10 @@ def generate_files_in_memory(data):
     if data.get('remark_desc'):
         table = doc.add_table(rows=2, cols=4)
         table.style = 'Table Grid'
-        
         set_cell_text(table.rows[0].cells[0], 'Name, dosage form', bold=True)
         set_cell_text(table.rows[0].cells[1], 'Batch#', bold=True)
         set_cell_text(table.rows[0].cells[2], 'Quantity', bold=True)
         set_cell_text(table.rows[0].cells[3], 'Inconsistency description', bold=True)
-        
         table.rows[1].cells[0].text = data.get('remark_item', '')
         table.rows[1].cells[1].text = data.get('remark_batch', '')
         table.rows[1].cells[2].text = data.get('remark_qty', '')
@@ -240,12 +262,13 @@ def generate_files_in_memory(data):
     return excel_buffer, word_buffer, base_name
 
 # --- UI Додатку ---
-st.title("📦 WHO Warehouse OCR & Automation")
+st.title("📦 WHO Warehouse Automation")
 
-tab1, tab2 = st.tabs(["📄 WRR Generator", "📦 Packing List OCR"])
+tab1, tab2 = st.tabs(["📄 WRR Generator", "📋 Packing List OCR"])
 
 with tab1:
-    uploaded_file = st.file_uploader("Upload WRR document scan (PDF, JPG, PNG)", type=['pdf', 'png', 'jpg'], key="wrr_uploader")
+    st.markdown("### 1. Upload WRR Document")
+    uploaded_file = st.file_uploader("Upload document scan (PDF, JPG, PNG)", type=['pdf', 'png', 'jpg'], key="wrr_uploader")
 
     temp_file_path = None
     if uploaded_file is not None:
@@ -253,57 +276,56 @@ with tab1:
             temp_file.write(uploaded_file.read())
             temp_file_path = temp_file.name
 
-        if st.button("Process Document (AI)"):
-            with st.spinner("Analyzing document via Gemini..."):
+        if st.button("🤖 Process Document via AI", use_container_width=True):
+            with st.spinner("Extracting data..."):
                 st.session_state['extracted_data'] = process_document_with_gemini(temp_file_path)
                 
         if temp_file_path and os.path.exists(temp_file_path):
             os.remove(temp_file_path)
 
     if 'extracted_data' in st.session_state and st.session_state['extracted_data']:
-        st.subheader("Review and Edit Data")
         data = st.session_state['extracted_data']
         
-        with st.form("data_form"):
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                act_number = st.text_input("ACT", value=data.get("act_number", ""))
-                po_number = st.text_input("PO", value=data.get("po_number", ""))
-                or_number = st.text_input("OR", value=data.get("or_number", ""))
+        # Згортаємий блок для зручності на мобільних пристроях
+        with st.expander("✏️ Review and Edit Extracted Data", expanded=True):
+            with st.form("data_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    po_number = st.text_input("PO", value=data.get("po_number", ""))
+                    act_number = st.text_input("ACT", value=data.get("act_number", ""))
+                    or_number = st.text_input("OR", value=data.get("or_number", ""))
+                    batch = st.text_input("Batch", value=data.get("batch", ""))
+                    exp_date = st.text_input("Exp.date (DD.MM.YYYY)", value=data.get("exp_date", ""))
+                    quantity = st.text_input("Quantity", value=data.get("quantity", ""))
+                with col2:
+                    project = st.text_input("Project", value=data.get("project", ""))
+                    task = st.text_input("Task", value=data.get("task", ""))
+                    award = st.text_input("Award", value=data.get("award", ""))
+                    award_end_date = st.text_input("Award end date", value=data.get("award_end_date", ""))
+                    donor = st.text_input("Donor", value=data.get("donor", ""))
+                    requester = st.text_input("Requester", value=data.get("requester", ""))
+                
                 item_name_ukr = st.text_input("Item Name [UKR]", value=data.get("item_name_ukr", ""))
                 item_name_eng = st.text_input("Item Name [ENG]", value=data.get("item_name_eng", ""))
                 who_item_code = st.text_input("WHO Item code", value=data.get("who_item_code", ""))
-            with col2:
-                batch = st.text_input("Batch", value=data.get("batch", ""))
-                exp_date = st.text_input("Exp.date (DD.MM.YYYY)", value=data.get("exp_date", ""))
-                quantity = st.text_input("Quantity", value=data.get("quantity", ""))
-                project = st.text_input("Project", value=data.get("project", ""))
-                task = st.text_input("Task", value=data.get("task", ""))
-            with col3:
-                award = st.text_input("Award", value=data.get("award", ""))
-                award_end_date = st.text_input("Award end date", value=data.get("award_end_date", ""))
-                donor = st.text_input("Donor", value=data.get("donor", ""))
-                requester = st.text_input("Requester", value=data.get("requester", ""))
                 wh = st.text_input("WH (Warehouse)", value=data.get("wh", ""))
 
-            st.markdown("---")
-            st.subheader("WRR Specific Fields")
-            col_w1, col_w2, col_w3 = st.columns(3)
-            with col_w1:
+                st.markdown("---")
+                st.markdown("**WRR Specific Fields**")
                 supplier_name = st.text_input("Supplier Name", value=data.get("supplier_name", ""))
-            with col_w2:
                 invoice_info = st.text_input("Invoice / Waybill", value=data.get("invoice_info", ""))
-            with col_w3:
                 number_of_parcels = st.text_input("Number of Parcels", value=data.get("number_of_parcels", ""))
-            
-            st.markdown("**Remarks / Discrepancies**")
-            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
-            with col_r1: remark_item = st.text_input("Remark: Item Name", value="")
-            with col_r2: remark_batch = st.text_input("Remark: Batch", value="")
-            with col_r3: remark_qty = st.text_input("Remark: Quantity", value="")
-            with col_r4: remark_desc = st.text_input("Remark: Inconsistency description", value="")
+                
+                st.markdown("**Remarks / Discrepancies**")
+                col_r1, col_r2 = st.columns(2)
+                with col_r1: 
+                    remark_item = st.text_input("Remark: Item Name", value="")
+                    remark_batch = st.text_input("Remark: Batch", value="")
+                with col_r2: 
+                    remark_qty = st.text_input("Remark: Quantity", value="")
+                    remark_desc = st.text_input("Remark: Inconsistency description", value="")
 
-            submitted = st.form_submit_button("Generate Files")
+                submitted = st.form_submit_button("✅ Apply Changes & Generate Files", use_container_width=True)
 
         if submitted:
             final_data = {
@@ -320,16 +342,16 @@ with tab1:
             
             excel_buffer, word_buffer, base_name = generate_files_in_memory(final_data)
             
-            st.markdown("---")
-            st.subheader("📥 Download Generated Files")
-            col_btn1, col_btn2, col_empty = st.columns([1.5, 1.5, 7]) 
+            st.success("Files successfully generated!")
+            st.markdown("### 2. Download Files")
+            col_btn1, col_btn2 = st.columns(2) 
             with col_btn1:
-                st.download_button(label="Download Excel Database", data=excel_buffer, file_name=f"{base_name}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                st.download_button(label="📊 Download Excel Database", data=excel_buffer, file_name=f"{base_name}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
             with col_btn2:
-                st.download_button(label="Download WRR Document", data=word_buffer, file_name=f"WRR_{base_name}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+                st.download_button(label="📄 Download WRR Document", data=word_buffer, file_name=f"WRR_{base_name}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
             
             st.markdown("---")
-            st.subheader("Email Template (Copy and paste into Outlook)")
+            st.markdown("### 📧 Email Template")
             st.text_input("Subject:", value=f"Warehouse Receiving Report / PO {po_number}")
             email_html = f"""
             <div style="font-family: Calibri, Arial, sans-serif; font-size: 14px;">
@@ -345,12 +367,14 @@ with tab1:
             </tr></table></div>
             """
             st.markdown(email_html, unsafe_allow_html=True)
+            st.info("💡 Highlight the text and table above, press Ctrl+C (or Copy), and paste it into your email body.")
 
 with tab2:
-    uploaded_pl_files = st.file_uploader("Upload Packing List scans/photos (Multiple allowed)", type=['pdf', 'png', 'jpg'], accept_multiple_files=True, key="pl_uploader")
+    st.markdown("### 1. Upload Packing Lists")
+    uploaded_pl_files = st.file_uploader("Upload Packing List scans/photos (Select multiple files at once)", type=['pdf', 'png', 'jpg'], accept_multiple_files=True, key="pl_uploader")
     
-    if uploaded_pl_files and st.button("Extract to Excel", key="extract_pl"):
-        with st.spinner("Processing packing lists via Gemini..."):
+    if uploaded_pl_files and st.button("🤖 Extract to Excel", use_container_width=True, key="extract_pl"):
+        with st.spinner("Processing packing lists via AI..."):
             temp_paths = []
             for f in uploaded_pl_files:
                 with tempfile.NamedTemporaryFile(delete=False, suffix=f".{f.name.split('.')[-1]}") as temp_file:
@@ -384,28 +408,62 @@ with tab2:
                         df_pl[col] = ""
                 df_pl = df_pl[cols]
 
-                st.success("Extraction complete!")
+                st.success("Extraction complete! Preview of the data:")
                 st.dataframe(df_pl, use_container_width=True)
                 
+                # Косметичне форматування Excel для Packing List
                 excel_buffer_pl = io.BytesIO()
                 with pd.ExcelWriter(excel_buffer_pl, engine='openpyxl') as writer:
-                    df_pl.to_excel(writer, index=False, startrow=2)
-                    worksheet = writer.sheets['Sheet1']
+                    df_pl.to_excel(writer, index=False, startrow=2, sheet_name='Packing_List')
+                    worksheet = writer.sheets['Packing_List']
                     
+                    header_fill = PatternFill(start_color='92D050', end_color='92D050', fill_type='solid')
+                    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+
+                    # Дані модуля (Рядок 1 та 2)
+                    ukr_col_idx = df_pl.columns.get_loc("Item description UKR") + 1
                     module_name = pl_data.get('module_name', '')
                     module_batch = pl_data.get('module_batch', '')
                     batch_text = f"batch: {module_batch}" if module_batch else ""
                     
-                    worksheet.cell(row=1, column=5, value=module_name)
-                    worksheet.cell(row=2, column=5, value=batch_text)
+                    cell_mod = worksheet.cell(row=1, column=ukr_col_idx, value=module_name)
+                    cell_batch = worksheet.cell(row=2, column=ukr_col_idx, value=batch_text)
+                    cell_mod.alignment = Alignment(horizontal='left', vertical='center')
+                    cell_batch.alignment = Alignment(horizontal='left', vertical='center')
+
+                    # Шапка (Рядок 3)
+                    for cell in worksheet[3]:
+                        cell.fill = header_fill
+                        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                        cell.border = thin_border
+
+                    # Тіло таблиці (Рядок 4+)
+                    for row in worksheet.iter_rows(min_row=4, max_row=worksheet.max_row):
+                        for cell in row:
+                            cell.border = thin_border
+                            col_name = df_pl.columns[cell.column - 1]
+                            if col_name in ["Item description UKR", "Item description ENG"]:
+                                cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=False)
+                            else:
+                                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
+
+                    # Автодобір ширини та фільтр
+                    for i, col in enumerate(df_pl.columns):
+                        col_letter = get_column_letter(i + 1)
+                        col_len = max([len(str(x)) for x in df_pl[col].values] + [len(str(col))])
+                        worksheet.column_dimensions[col_letter].width = min(col_len + 2, 50)
+
+                    worksheet.auto_filter.ref = f"A3:{get_column_letter(worksheet.max_column)}{worksheet.max_row}"
                     
                 excel_buffer_pl.seek(0)
                 
+                st.markdown("### 2. Download Result")
                 st.download_button(
-                    label="Download Excel Document",
+                    label="📊 Download Formatted Excel Document",
                     data=excel_buffer_pl,
                     file_name="Packing_List.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
                 )
             else:
                 st.warning("No items extracted or an error occurred.")
