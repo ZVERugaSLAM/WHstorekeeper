@@ -12,12 +12,9 @@ import io
 import os
 import time
 import mimetypes
-
-# Нові імпорти для форматування Excel
 from openpyxl.styles import Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
-# Налаштування Gemini API через Streamlit Secrets
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=API_KEY)
@@ -31,7 +28,6 @@ except KeyError:
 st.set_page_config(page_title="WHO Warehouse OCR", layout="wide", page_icon="📦")
 
 def api_call_with_retry(func, *args, **kwargs):
-    """Виконує API-виклик з очікуванням при 429 помилці."""
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -144,7 +140,6 @@ def set_cell_text(cell, text, bold=False):
 def generate_files_in_memory(data):
     base_name = f"PO_{data.get('po_number', 'XXX')}_Act_{data.get('act_number', 'XXX')}".replace("/", "-")
     
-    # Створення Excel для WRR
     excel_buffer = io.BytesIO()
     df = pd.DataFrame([{
         "ACT": data.get('act_number'), "PO": data.get('po_number'), "OR": data.get('or_number'),
@@ -160,17 +155,14 @@ def generate_files_in_memory(data):
         df.to_excel(writer, index=False, sheet_name='WRR')
         worksheet = writer.sheets['WRR']
         
-        # Стилі WRR
         header_fill = PatternFill(start_color='92D050', end_color='92D050', fill_type='solid')
         thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
 
-        # Форматування шапки (рядок 1)
         for cell in worksheet[1]:
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             cell.border = thin_border
 
-        # Форматування даних
         for row in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row):
             for cell in row:
                 cell.border = thin_border
@@ -180,18 +172,15 @@ def generate_files_in_memory(data):
                 else:
                     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
 
-        # Автодобір ширини стовпців
         for i, col in enumerate(df.columns):
             col_letter = get_column_letter(i + 1)
             col_len = max([len(str(x)) for x in df[col].values] + [len(str(col))])
             worksheet.column_dimensions[col_letter].width = min(col_len + 2, 50)
 
-        # Фільтр
         worksheet.auto_filter.ref = worksheet.dimensions
 
     excel_buffer.seek(0)
     
-    # Створення Word (WRR)
     word_buffer = io.BytesIO()
     doc = Document()
     style = doc.styles['Normal']
@@ -261,7 +250,6 @@ def generate_files_in_memory(data):
     
     return excel_buffer, word_buffer, base_name
 
-# --- UI Додатку ---
 st.title("📦 WHO Warehouse Automation")
 
 tab1, tab2 = st.tabs(["📄 WRR Generator", "📋 Packing List OCR"])
@@ -286,7 +274,6 @@ with tab1:
     if 'extracted_data' in st.session_state and st.session_state['extracted_data']:
         data = st.session_state['extracted_data']
         
-        # Згортаємий блок для зручності на мобільних пристроях
         with st.expander("✏️ Review and Edit Extracted Data", expanded=True):
             with st.form("data_form"):
                 col1, col2 = st.columns(2)
@@ -342,18 +329,13 @@ with tab1:
             
             excel_buffer, word_buffer, base_name = generate_files_in_memory(final_data)
             
-            st.success("Files successfully generated!")
-            st.markdown("### 2. Download Files")
-            col_btn1, col_btn2 = st.columns(2) 
-            with col_btn1:
-                st.download_button(label="📊 Download Excel Database", data=excel_buffer, file_name=f"{base_name}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-            with col_btn2:
-                st.download_button(label="📄 Download WRR Document", data=word_buffer, file_name=f"WRR_{base_name}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
-            
-            st.markdown("---")
-            st.markdown("### 📧 Email Template")
-            st.text_input("Subject:", value=f"Warehouse Receiving Report / PO {po_number}")
-            email_html = f"""
+            # Збереження результатів у session_state
+            st.session_state['wrr_ready'] = True
+            st.session_state['wrr_excel_data'] = excel_buffer.getvalue()
+            st.session_state['wrr_word_data'] = word_buffer.getvalue()
+            st.session_state['wrr_base_name'] = base_name
+            st.session_state['wrr_po_number'] = po_number
+            st.session_state['wrr_email_html'] = f"""
             <div style="font-family: Calibri, Arial, sans-serif; font-size: 14px;">
             <p>Dear Team,</p>
             <p>Please find attached the Warehouse Receiving Report (WRR) and Excel database for PO {po_number}.<br>
@@ -366,7 +348,21 @@ with tab1:
             <td style="padding: 8px;">{po_number}</td><td style="padding: 8px;">{or_number}</td><td style="padding: 8px;">{requester}</td><td style="padding: 8px;">{item_name_eng}</td><td style="padding: 8px;">{batch}</td><td style="padding: 8px;">{exp_date}</td><td style="padding: 8px;">{quantity}</td>
             </tr></table></div>
             """
-            st.markdown(email_html, unsafe_allow_html=True)
+
+        # Відображення кнопок завантаження з session_state
+        if st.session_state.get('wrr_ready'):
+            st.success("Files successfully generated!")
+            st.markdown("### 2. Download Files")
+            col_btn1, col_btn2 = st.columns(2) 
+            with col_btn1:
+                st.download_button(label="📊 Download Excel Database", data=st.session_state['wrr_excel_data'], file_name=f"{st.session_state['wrr_base_name']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            with col_btn2:
+                st.download_button(label="📄 Download WRR Document", data=st.session_state['wrr_word_data'], file_name=f"WRR_{st.session_state['wrr_base_name']}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+            
+            st.markdown("---")
+            st.markdown("### 📧 Email Template")
+            st.text_input("Subject:", value=f"Warehouse Receiving Report / PO {st.session_state['wrr_po_number']}")
+            st.markdown(st.session_state['wrr_email_html'], unsafe_allow_html=True)
             st.info("💡 Highlight the text and table above, press Ctrl+C (or Copy), and paste it into your email body.")
 
 with tab2:
@@ -407,11 +403,7 @@ with tab2:
                     if col not in df_pl.columns:
                         df_pl[col] = ""
                 df_pl = df_pl[cols]
-
-                st.success("Extraction complete! Preview of the data:")
-                st.dataframe(df_pl, use_container_width=True)
                 
-                # Косметичне форматування Excel для Packing List
                 excel_buffer_pl = io.BytesIO()
                 with pd.ExcelWriter(excel_buffer_pl, engine='openpyxl') as writer:
                     df_pl.to_excel(writer, index=False, startrow=2, sheet_name='Packing_List')
@@ -420,7 +412,6 @@ with tab2:
                     header_fill = PatternFill(start_color='92D050', end_color='92D050', fill_type='solid')
                     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
 
-                    # Дані модуля (Рядок 1 та 2)
                     ukr_col_idx = df_pl.columns.get_loc("Item description UKR") + 1
                     module_name = pl_data.get('module_name', '')
                     module_batch = pl_data.get('module_batch', '')
@@ -431,13 +422,11 @@ with tab2:
                     cell_mod.alignment = Alignment(horizontal='left', vertical='center')
                     cell_batch.alignment = Alignment(horizontal='left', vertical='center')
 
-                    # Шапка (Рядок 3)
                     for cell in worksheet[3]:
                         cell.fill = header_fill
                         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                         cell.border = thin_border
 
-                    # Тіло таблиці (Рядок 4+)
                     for row in worksheet.iter_rows(min_row=4, max_row=worksheet.max_row):
                         for cell in row:
                             cell.border = thin_border
@@ -447,7 +436,6 @@ with tab2:
                             else:
                                 cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
 
-                    # Автодобір ширини та фільтр
                     for i, col in enumerate(df_pl.columns):
                         col_letter = get_column_letter(i + 1)
                         col_len = max([len(str(x)) for x in df_pl[col].values] + [len(str(col))])
@@ -457,13 +445,23 @@ with tab2:
                     
                 excel_buffer_pl.seek(0)
                 
-                st.markdown("### 2. Download Result")
-                st.download_button(
-                    label="📊 Download Formatted Excel Document",
-                    data=excel_buffer_pl,
-                    file_name="Packing_List.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
+                # Збереження результатів у session_state
+                st.session_state['pl_ready'] = True
+                st.session_state['pl_df'] = df_pl
+                st.session_state['pl_excel_data'] = excel_buffer_pl.getvalue()
             else:
                 st.warning("No items extracted or an error occurred.")
+
+    # Відображення таблиці та кнопки завантаження з session_state
+    if st.session_state.get('pl_ready'):
+        st.success("Extraction complete! Preview of the data:")
+        st.dataframe(st.session_state['pl_df'], use_container_width=True)
+        
+        st.markdown("### 2. Download Result")
+        st.download_button(
+            label="📊 Download Formatted Excel Document",
+            data=st.session_state['pl_excel_data'],
+            file_name="Packing_List.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
