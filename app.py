@@ -12,6 +12,7 @@ import io
 import os
 import time
 import mimetypes
+import zipfile
 from openpyxl.styles import Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
@@ -138,7 +139,7 @@ def set_cell_text(cell, text, bold=False):
     run.bold = bold
 
 def generate_files_in_memory(data):
-    base_name = f"PO_{data.get('po_number', 'XXX')}_Act_{data.get('act_number', 'XXX')}".replace("/", "-")
+    base_name = f"ACT_{data.get('act_number', 'XXX')}_PO_{data.get('po_number', 'XXX')}".replace("/", "-")
     
     excel_buffer = io.BytesIO()
     df = pd.DataFrame([{
@@ -329,10 +330,17 @@ with tab1:
             
             excel_buffer, word_buffer, base_name = generate_files_in_memory(final_data)
             
+            # Створення ZIP-архіву
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                zip_file.writestr(f"{base_name}.xlsx", excel_buffer.getvalue())
+                zip_file.writestr(f"WRR_{base_name}.docx", word_buffer.getvalue())
+            
             # Збереження результатів у session_state
             st.session_state['wrr_ready'] = True
             st.session_state['wrr_excel_data'] = excel_buffer.getvalue()
             st.session_state['wrr_word_data'] = word_buffer.getvalue()
+            st.session_state['wrr_zip_data'] = zip_buffer.getvalue()
             st.session_state['wrr_base_name'] = base_name
             st.session_state['wrr_po_number'] = po_number
             st.session_state['wrr_email_html'] = f"""
@@ -349,15 +357,16 @@ with tab1:
             </tr></table></div>
             """
 
-        # Відображення кнопок завантаження з session_state
         if st.session_state.get('wrr_ready'):
             st.success("Files successfully generated!")
             st.markdown("### 2. Download Files")
-            col_btn1, col_btn2 = st.columns(2) 
+            col_btn1, col_btn2, col_btn3 = st.columns(3) 
             with col_btn1:
-                st.download_button(label="📊 Download Excel Database", data=st.session_state['wrr_excel_data'], file_name=f"{st.session_state['wrr_base_name']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                st.download_button(label="📊 Download Excel", data=st.session_state['wrr_excel_data'], file_name=f"{st.session_state['wrr_base_name']}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
             with col_btn2:
-                st.download_button(label="📄 Download WRR Document", data=st.session_state['wrr_word_data'], file_name=f"WRR_{st.session_state['wrr_base_name']}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+                st.download_button(label="📄 Download Word", data=st.session_state['wrr_word_data'], file_name=f"WRR_{st.session_state['wrr_base_name']}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+            with col_btn3:
+                st.download_button(label="📁 Download Folder (ZIP)", data=st.session_state['wrr_zip_data'], file_name=f"{st.session_state['wrr_base_name']}.zip", mime="application/zip", use_container_width=True)
             
             st.markdown("---")
             st.markdown("### 📧 Email Template")
@@ -445,14 +454,12 @@ with tab2:
                     
                 excel_buffer_pl.seek(0)
                 
-                # Збереження результатів у session_state
                 st.session_state['pl_ready'] = True
                 st.session_state['pl_df'] = df_pl
                 st.session_state['pl_excel_data'] = excel_buffer_pl.getvalue()
             else:
                 st.warning("No items extracted or an error occurred.")
 
-    # Відображення таблиці та кнопки завантаження з session_state
     if st.session_state.get('pl_ready'):
         st.success("Extraction complete! Preview of the data:")
         st.dataframe(st.session_state['pl_df'], use_container_width=True)
