@@ -52,21 +52,33 @@ def process_document_with_gemini(file_path):
         model = genai.GenerativeModel(model_name="gemini-2.5-flash")
         prompt = """
         You are a logistics assistant at WHO. Analyze the scanned warehouse documents.
-        Extract the following data and return it STRICTLY in VALID JSON format.
+        Extract the general document information and ALL listed items.
+        Return STRICTLY in VALID JSON format.
         If information is missing, leave the value empty ("").
 
         Rules for specific fields:
-        - "po_number": Extract ONLY the numeric part of the Purchase Order. Remove any "PO" prefixes. Example: "203793992".
-        - "item_name_eng": Extract the FULL and complete English description of the item from the invoice or packing list.
-        - "item_name_ukr": Provide an accurate Ukrainian translation of the "item_name_eng".
+        - "po_number": Extract ONLY the numeric part of the Purchase Order.
         - "exp_date": Format strictly as DD.MM.YYYY.
-        - "supplier_name": Extract the supplier or vendor name from the document.
-        - "invoice_info": Extract the Invoice number and date (e.g., "Invoice CI2600385.1 09.02.2026") or Waybill (Видаткова накладна) number and date.
-        - "number_of_parcels": Extract the number of parcels/pallets/boxes (Кількість місць) from the document.
 
-        JSON Keys to return:
-        "act_number", "po_number", "item_name_eng", "item_name_ukr", "batch",
-        "exp_date", "quantity", "number_of_parcels", "supplier_name", "invoice_info"
+        Format the output as a valid JSON object with this structure:
+        {
+            "act_number": "Extract if present",
+            "po_number": "Numeric part only",
+            "supplier_name": "Supplier or vendor name",
+            "invoice_info": "Invoice/Waybill number and date",
+            "number_of_parcels": "Total number of parcels/pallets/boxes",
+            "items": [
+                {
+                    "item_name_eng": "FULL English description",
+                    "item_name_ukr": "Accurate Ukrainian translation",
+                    "who_item_code": "Extract if present",
+                    "who_catalogue_item_name": "Extract if present",
+                    "batch": "Batch/Lot number",
+                    "exp_date": "Strictly DD.MM.YYYY",
+                    "quantity": "Numeric quantity"
+                }
+            ]
+        }
         """
         response = api_call_with_retry(model.generate_content, [prompt, uploaded_doc])
         json_text = response.text
@@ -74,9 +86,16 @@ def process_document_with_gemini(file_path):
         if json_match:
             json_text = json_match.group(1)
         data = json.loads(json_text)
-        manual_fields = ["or_number", "who_item_code", "project", "task", "award", "award_end_date", "donor", "requester", "wh"]
+        
+        # Ініціалізація пустих полів
+        manual_fields = ["or_number", "project", "task", "award", "award_end_date", "donor", "requester", "wh"]
         for field in manual_fields:
-            data[field] = ""
+            if field not in data:
+                data[field] = ""
+                
+        if "items" not in data or not isinstance(data["items"], list):
+            data["items"] = []
+            
         return data
     except Exception as e:
         st.error(f"OCR Error: {e}")
@@ -138,19 +157,35 @@ def set_cell_text(cell, text, bold=False):
     run = cell.paragraphs[0].add_run(text)
     run.bold = bold
 
+def get_total_quantity(items):
+    try:
+        total = sum(float(str(i.get('Quantity', '0')).replace(',', '.').replace(' ', '')) for i in items if str(i.get('Quantity', '')).strip())
+        return str(int(total)) if total.is_integer() else str(total)
+    except Exception:
+        return "See attached list"
+
 def generate_files_in_memory(data):
     base_name = f"ACT_{data.get('act_number', 'XXX')}_PO_{data.get('po_number', 'XXX')}".replace("/", "-")
     
+    # Формування рядків для Excel
+    excel_rows = []
+    for item in data.get('items', []):
+        excel_rows.append({
+            "ACT": data.get('act_number'), "PO": data.get('po_number'), "OR": data.get('or_number'),
+            "Item Name [UKR]": item.get('Item Name [UKR]', ''), 
+            "Item Name [ENG]": item.get('Item Name [ENG]', ''),
+            "WHO Item code": item.get('WHO Item code', ''), 
+            "WHO Catalogue Item Name": item.get('WHO Catalogue Item Name', ''),
+            "Batch": item.get('Batch', ''), 
+            "Exp.date": item.get('Exp.date', ''), 
+            "Quantity": item.get('Quantity', ''), 
+            "Project": data.get('project'), "Task": data.get('task'), "Award": data.get('award'), 
+            "Award end date": data.get('award_end_date'), "Donor": data.get('donor'), 
+            "Requester": data.get('requester'), "WH": data.get('wh')
+        })
+        
     excel_buffer = io.BytesIO()
-    df = pd.DataFrame([{
-        "ACT": data.get('act_number'), "PO": data.get('po_number'), "OR": data.get('or_number'),
-        "Item Name [UKR]": data.get('item_name_ukr'), "Item Name [ENG]": data.get('item_name_eng'),
-        "WHO Item code": data.get('who_item_code'), "Batch": data.get('batch'), 
-        "Exp.date": data.get('exp_date'), "Quantity": data.get('quantity'), 
-        "Project": data.get('project'), "Task": data.get('task'), "Award": data.get('award'), 
-        "Award end date": data.get('award_end_date'), "Donor": data.get('donor'), 
-        "Requester": data.get('requester'), "WH": data.get('wh')
-    }])
+    df = pd.DataFrame(excel_rows)
     
     with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='WRR')
@@ -168,7 +203,7 @@ def generate_files_in_memory(data):
             for cell in row:
                 cell.border = thin_border
                 col_name = df.columns[cell.column - 1]
-                if col_name in ["Item Name [UKR]", "Item Name [ENG]"]:
+                if col_name in ["Item Name [UKR]", "Item Name [ENG]", "WHO Catalogue Item Name"]:
                     cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
                 else:
                     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
@@ -204,7 +239,10 @@ def generate_files_in_memory(data):
     set_cell_text(header_table.cell(1, 0), "Registration Number:")
     set_cell_text(header_table.cell(1, 1), f"{data.get('invoice_info', '')}")
     set_cell_text(header_table.cell(2, 0), "Number of items Received:")
-    set_cell_text(header_table.cell(2, 1), f"{data.get('quantity', '')}")
+    
+    total_qty_str = get_total_quantity(data.get('items', []))
+    set_cell_text(header_table.cell(2, 1), total_qty_str)
+    
     set_cell_text(header_table.cell(3, 0), "Number of Parcels Received:")
     set_cell_text(header_table.cell(3, 1), f"{data.get('number_of_parcels', '')}")
     set_cell_text(header_table.cell(4, 0), "Item received (check one):")
@@ -275,16 +313,13 @@ with tab1:
     if 'extracted_data' in st.session_state and st.session_state['extracted_data']:
         data = st.session_state['extracted_data']
         
-        with st.expander("✏️ Review and Edit Extracted Data", expanded=True):
+        with st.expander("✏️ Review and Edit General Data", expanded=True):
             with st.form("data_form"):
                 col1, col2 = st.columns(2)
                 with col1:
                     po_number = st.text_input("PO", value=data.get("po_number", ""))
                     act_number = st.text_input("ACT", value=data.get("act_number", ""))
                     or_number = st.text_input("OR", value=data.get("or_number", ""))
-                    batch = st.text_input("Batch", value=data.get("batch", ""))
-                    exp_date = st.text_input("Exp.date (DD.MM.YYYY)", value=data.get("exp_date", ""))
-                    quantity = st.text_input("Quantity", value=data.get("quantity", ""))
                 with col2:
                     project = st.text_input("Project", value=data.get("project", ""))
                     task = st.text_input("Task", value=data.get("task", ""))
@@ -293,9 +328,6 @@ with tab1:
                     donor = st.text_input("Donor", value=data.get("donor", ""))
                     requester = st.text_input("Requester", value=data.get("requester", ""))
                 
-                item_name_ukr = st.text_input("Item Name [UKR]", value=data.get("item_name_ukr", ""))
-                item_name_eng = st.text_input("Item Name [ENG]", value=data.get("item_name_eng", ""))
-                who_item_code = st.text_input("WHO Item code", value=data.get("who_item_code", ""))
                 wh = st.text_input("WH (Warehouse)", value=data.get("wh", ""))
 
                 st.markdown("---")
@@ -313,30 +345,64 @@ with tab1:
                     remark_qty = st.text_input("Remark: Quantity", value="")
                     remark_desc = st.text_input("Remark: Inconsistency description", value="")
 
+                st.markdown("---")
+                st.markdown("**Items List (Editable Table)**")
+                st.info("You can add, delete, or modify any number of rows directly in the table below.")
+                
+                # Підготовка списку товарів для таблиці
+                items_list = data.get("items", [])
+                if not items_list:
+                    items_list = [{"item_name_ukr": "", "item_name_eng": "", "who_item_code": "", "who_catalogue_item_name": "", "batch": "", "exp_date": "", "quantity": ""}]
+                
+                df_items = pd.DataFrame(items_list)
+                df_items = df_items.rename(columns={
+                    "item_name_ukr": "Item Name [UKR]",
+                    "item_name_eng": "Item Name [ENG]",
+                    "who_item_code": "WHO Item code",
+                    "who_catalogue_item_name": "WHO Catalogue Item Name",
+                    "batch": "Batch",
+                    "exp_date": "Exp.date",
+                    "quantity": "Quantity"
+                })
+                
+                cols = ["Item Name [UKR]", "Item Name [ENG]", "WHO Item code", "WHO Catalogue Item Name", "Batch", "Exp.date", "Quantity"]
+                for col in cols:
+                    if col not in df_items.columns:
+                        df_items[col] = ""
+                df_items = df_items[cols]
+                
+                # Інтерактивна таблиця
+                edited_items_df = st.data_editor(df_items, num_rows="dynamic", use_container_width=True)
+
                 submitted = st.form_submit_button("✅ Apply Changes & Generate Files", use_container_width=True)
 
         if submitted:
+            final_items = edited_items_df.to_dict('records')
             final_data = {
                 "act_number": act_number, "po_number": po_number, "or_number": or_number,
-                "item_name_ukr": item_name_ukr, "item_name_eng": item_name_eng,
-                "who_item_code": who_item_code, "batch": batch, "exp_date": exp_date,
-                "quantity": quantity, "project": project, "task": task, "award": award,
+                "project": project, "task": task, "award": award,
                 "award_end_date": award_end_date, "donor": donor, "requester": requester, 
                 "wh": wh, "supplier_name": supplier_name, "invoice_info": invoice_info,
                 "number_of_parcels": number_of_parcels,
                 "remark_item": remark_item, "remark_batch": remark_batch, 
-                "remark_qty": remark_qty, "remark_desc": remark_desc
+                "remark_qty": remark_qty, "remark_desc": remark_desc,
+                "items": final_items
             }
             
             excel_buffer, word_buffer, base_name = generate_files_in_memory(final_data)
             
-            # Створення ZIP-архіву
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                 zip_file.writestr(f"{base_name}.xlsx", excel_buffer.getvalue())
                 zip_file.writestr(f"WRR_{base_name}.docx", word_buffer.getvalue())
             
-            # Збереження результатів у session_state
+            # Генерація HTML рядків для всіх товарів
+            email_items_html = ""
+            for item in final_items:
+                email_items_html += f"""<tr>
+                <td style="padding: 8px;">{po_number}</td><td style="padding: 8px;">{or_number}</td><td style="padding: 8px;">{requester}</td><td style="padding: 8px;">{item.get('Item Name [ENG]', '')}</td><td style="padding: 8px;">{item.get('Batch', '')}</td><td style="padding: 8px;">{item.get('Exp.date', '')}</td><td style="padding: 8px;">{item.get('Quantity', '')}</td>
+                </tr>"""
+
             st.session_state['wrr_ready'] = True
             st.session_state['wrr_excel_data'] = excel_buffer.getvalue()
             st.session_state['wrr_word_data'] = word_buffer.getvalue()
@@ -351,10 +417,8 @@ with tab1:
             The data has been extracted and transferred to Farmasoft for balance registration.</p>
             <table border="1" style="border-collapse: collapse; width: 100%; max-width: 1000px; border-color: gray;">
             <tr style="background-color: rgba(128, 128, 128, 0.2);">
-            <th style="padding: 8px; text-align: left;">PO</th><th style="padding: 8px; text-align: left;">Order request</th><th style="padding: 8px; text-align: left;">Requester</th><th style="padding: 8px; text-align: left;">Item Name [ENG]</th><th style="padding: 8px; text-align: left;">Batch</th><th style="padding: 8px; text-align: left;">Expiry date</th><th style="padding: 8px; text-align: left;">Total Quantity Inbound</th>
-            </tr><tr>
-            <td style="padding: 8px;">{po_number}</td><td style="padding: 8px;">{or_number}</td><td style="padding: 8px;">{requester}</td><td style="padding: 8px;">{item_name_eng}</td><td style="padding: 8px;">{batch}</td><td style="padding: 8px;">{exp_date}</td><td style="padding: 8px;">{quantity}</td>
-            </tr></table></div>
+            <th style="padding: 8px; text-align: left;">PO</th><th style="padding: 8px; text-align: left;">Order request</th><th style="padding: 8px; text-align: left;">Requester</th><th style="padding: 8px; text-align: left;">Item Name [ENG]</th><th style="padding: 8px; text-align: left;">Batch</th><th style="padding: 8px; text-align: left;">Expiry date</th><th style="padding: 8px; text-align: left;">Quantity Inbound</th>
+            </tr>{email_items_html}</table></div>
             """
 
         if st.session_state.get('wrr_ready'):
