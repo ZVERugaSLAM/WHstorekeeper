@@ -51,14 +51,14 @@ def process_document_with_gemini(file_path):
         uploaded_doc = api_call_with_retry(genai.upload_file, path=file_path)
         model = genai.GenerativeModel(model_name="gemini-2.5-flash")
         prompt = """
-        You are a logistics assistant at WHO. Analyze the scanned warehouse documents.
+        You are a logistics and medical translation assistant at WHO. Analyze the scanned warehouse documents.
         Extract the general document information and ALL listed items.
         Return STRICTLY in VALID JSON format.
-        If information is missing, leave the value empty ("").
 
         Rules for specific fields:
         - "po_number": Extract ONLY the numeric part of the Purchase Order.
         - "exp_date": Format strictly as DD.MM.YYYY.
+        - "item_name_ukr": MANDATORY FIELD. You MUST provide a professional and accurate Ukrainian translation for EVERY item listed. Use standardized medical, pharmaceutical, and logistical terminology approved by the World Health Organization (WHO) and the Ministry of Health of Ukraine (МОЗ України). Do not leave this empty under any circumstances.
 
         Format the output as a valid JSON object with this structure:
         {
@@ -70,7 +70,7 @@ def process_document_with_gemini(file_path):
             "items": [
                 {
                     "item_name_eng": "FULL English description",
-                    "item_name_ukr": "Accurate Ukrainian translation",
+                    "item_name_ukr": "Accurate Ukrainian translation (WHO/МОЗ terminology)",
                     "who_item_code": "Extract if present",
                     "who_catalogue_item_name": "Extract if present",
                     "batch": "Batch/Lot number",
@@ -87,7 +87,6 @@ def process_document_with_gemini(file_path):
             json_text = json_match.group(1)
         data = json.loads(json_text)
         
-        # Ініціалізація пустих полів
         manual_fields = ["or_number", "project", "task", "award", "award_end_date", "donor", "requester", "wh"]
         for field in manual_fields:
             if field not in data:
@@ -107,7 +106,7 @@ def process_packing_lists(file_paths):
         prompt = """
         You are a logistics data extraction assistant. Analyze packing list images representing multiple boxes on a pallet.
         Extract the general module information and ALL listed items across all provided pages.
-        Always translate the English item description to Ukrainian for the 'item_description_ukr' field.
+        Always translate the English item description to Ukrainian for the 'item_description_ukr' field. Use WHO and МОЗ України terminology.
         If any data is missing on the document, leave the value empty ("").
         Dates must be strictly in DD.MM.YYYY format.
 
@@ -121,7 +120,7 @@ def process_packing_lists(file_paths):
               "item_no": "Item code or number",
               "quantity": "Numeric quantity",
               "packing_unit": "UOM or packing unit (e.g., pack, vial, kit)",
-              "item_description_ukr": "Accurate Ukrainian translation of the item description",
+              "item_description_ukr": "Accurate Ukrainian translation of the item description (WHO/МОЗ terminology)",
               "item_description_eng": "Full English item description",
               "batch_no": "Item batch number",
               "man_date": "Manufacturing date",
@@ -167,7 +166,6 @@ def get_total_quantity(items):
 def generate_files_in_memory(data):
     base_name = f"ACT_{data.get('act_number', 'XXX')}_PO_{data.get('po_number', 'XXX')}".replace("/", "-")
     
-    # Формування рядків для Excel
     excel_rows = []
     for item in data.get('items', []):
         excel_rows.append({
@@ -317,18 +315,17 @@ with tab1:
             with st.form("data_form"):
                 col1, col2 = st.columns(2)
                 with col1:
-                    po_number = st.text_input("PO", value=data.get("po_number", ""))
                     act_number = st.text_input("ACT", value=data.get("act_number", ""))
+                    po_number = st.text_input("PO", value=data.get("po_number", ""))
                     or_number = st.text_input("OR", value=data.get("or_number", ""))
+                    donor = st.text_input("Donor", value=data.get("donor", ""))
+                    requester = st.text_input("Requester", value=data.get("requester", ""))
                 with col2:
                     project = st.text_input("Project", value=data.get("project", ""))
                     task = st.text_input("Task", value=data.get("task", ""))
                     award = st.text_input("Award", value=data.get("award", ""))
                     award_end_date = st.text_input("Award end date", value=data.get("award_end_date", ""))
-                    donor = st.text_input("Donor", value=data.get("donor", ""))
-                    requester = st.text_input("Requester", value=data.get("requester", ""))
-                
-                wh = st.text_input("WH (Warehouse)", value=data.get("wh", ""))
+                    wh = st.text_input("WH (Warehouse)", value=data.get("wh", ""))
 
                 st.markdown("---")
                 st.markdown("**WRR Specific Fields**")
@@ -349,7 +346,6 @@ with tab1:
                 st.markdown("**Items List (Editable Table)**")
                 st.info("You can add, delete, or modify any number of rows directly in the table below.")
                 
-                # Підготовка списку товарів для таблиці
                 items_list = data.get("items", [])
                 if not items_list:
                     items_list = [{"item_name_ukr": "", "item_name_eng": "", "who_item_code": "", "who_catalogue_item_name": "", "batch": "", "exp_date": "", "quantity": ""}]
@@ -371,7 +367,6 @@ with tab1:
                         df_items[col] = ""
                 df_items = df_items[cols]
                 
-                # Інтерактивна таблиця
                 edited_items_df = st.data_editor(df_items, num_rows="dynamic", use_container_width=True)
 
                 submitted = st.form_submit_button("✅ Apply Changes & Generate Files", use_container_width=True)
@@ -396,7 +391,6 @@ with tab1:
                 zip_file.writestr(f"{base_name}.xlsx", excel_buffer.getvalue())
                 zip_file.writestr(f"WRR_{base_name}.docx", word_buffer.getvalue())
             
-            # Генерація HTML рядків для всіх товарів
             email_items_html = ""
             for item in final_items:
                 email_items_html += f"""<tr>
