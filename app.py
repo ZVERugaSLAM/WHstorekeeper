@@ -56,7 +56,7 @@ def process_document_with_gemini(file_path):
         Return STRICTLY in VALID JSON format.
 
         Rules for specific fields:
-        - "po_number": Extract ONLY the numeric part of the Purchase Order.
+        - "po_number": Extract ONLY the numeric part of the Purchase Order. Remove any trailing spaces.
         - "exp_date": Format strictly as DD.MM.YYYY.
         - "item_name_ukr": MANDATORY FIELD. You MUST provide a professional and accurate Ukrainian translation for EVERY item listed. Use standardized medical, pharmaceutical, and logistical terminology approved by the World Health Organization (WHO) and the Ministry of Health of Ukraine (МОЗ України). Do not leave this empty under any circumstances.
 
@@ -203,6 +203,8 @@ def generate_files_in_memory(data):
                 col_name = df.columns[cell.column - 1]
                 if col_name in ["Item Name [UKR]", "Item Name [ENG]", "WHO Catalogue Item Name"]:
                     cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                elif col_name == "Donor":
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                 else:
                     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
 
@@ -372,6 +374,10 @@ with tab1:
                 submitted = st.form_submit_button("✅ Apply Changes & Generate Files", use_container_width=True)
 
         if submitted:
+            # Очищення номерів від пробілів
+            po_number = po_number.strip()
+            act_number = act_number.strip()
+
             final_items = edited_items_df.to_dict('records')
             final_data = {
                 "act_number": act_number, "po_number": po_number, "or_number": or_number,
