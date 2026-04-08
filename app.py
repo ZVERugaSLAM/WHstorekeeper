@@ -28,6 +28,42 @@ except KeyError:
 
 st.set_page_config(page_title="WHO Warehouse OCR", layout="wide", page_icon="📦")
 
+# --- Повний список реквесторів ---
+BASE_REQUESTERS = [
+    "",
+    "Anastasiia SCHERBAKOVA",
+    "Andrii DERECHA",
+    "Andrii SKIPALSKYI",
+    "Arkadii VODIANYK",
+    "Artem SKRYPNYK",
+    "Ayadil SAPARBEKOV",
+    "Denise Assaf",
+    "Dorin ROTARU",
+    "Ihor PAVLOVICH",
+    "Ivan KUZMINSKYI",
+    "Jacek BURCZY",
+    "Kamal AKBAROV",
+    "Kateryna BARABASH",
+    "Marharyta HROMOVA",
+    "Marta WNOROWSKA",
+    "MARTINEZ ANICETO, Julio Maria",
+    "Oleksandr SUVOROV",
+    "Oleksandr Tsybulnyk",
+    "Oleksandra Antonova",
+    "Oleksii KOSTIUCHENKOV",
+    "Riza IKRANBEGIIN",
+    "Ruslan TROSHKIN",
+    "Simon BEAMISH",
+    "Taras ZHURBA",
+    "Vladyslav PASTUSHENKO",
+    "Volodymyr GOLYK",
+    "Yevgenii GRECHUKHA",
+    "Yurii ZHYHARIEV"
+]
+
+if 'requesters_list' not in st.session_state:
+    st.session_state['requesters_list'] = sorted(list(set(BASE_REQUESTERS)))
+
 def api_call_with_retry(func, *args, **kwargs):
     max_retries = 3
     for attempt in range(max_retries):
@@ -52,6 +88,7 @@ def process_document_with_gemini(file_path):
         model = genai.GenerativeModel(model_name="gemini-2.5-flash")
         prompt = """
         You are a logistics and medical translation assistant at WHO. Analyze the scanned warehouse documents.
+        Look specifically for "The Discrepancy report" (Акт про невідповідність товару) or standard Invoices/Waybills.
         Extract the general document information and ALL listed items.
         Return STRICTLY in VALID JSON format.
 
@@ -77,7 +114,8 @@ def process_document_with_gemini(file_path):
                     "exp_date": "Strictly DD.MM.YYYY",
                     "quantity": "Numeric quantity"
                 }
-            ]
+            ],
+            "remarks_list": [{"item_name": "", "batch": "", "qty": "", "inconsistency_desc": ""}]
         }
         """
         response = api_call_with_retry(model.generate_content, [prompt, uploaded_doc])
@@ -87,10 +125,12 @@ def process_document_with_gemini(file_path):
             json_text = json_match.group(1)
         data = json.loads(json_text)
         
-        manual_fields = ["or_number", "project", "task", "award", "award_end_date", "donor", "requester", "wh"]
+        manual_fields = ["or_number", "project", "task", "award", "award_end_date", "donor", "requester"]
         for field in manual_fields:
             if field not in data:
                 data[field] = ""
+        
+        data["wh"] = "Biocon"  # Сталий склад
                 
         if "items" not in data or not isinstance(data["items"], list):
             data["items"] = []
@@ -153,7 +193,7 @@ def process_packing_lists(file_paths):
 
 def set_cell_text(cell, text, bold=False):
     cell.text = ""
-    run = cell.paragraphs[0].add_run(text)
+    run = cell.paragraphs[0].add_run(str(text))
     run.bold = bold
 
 def get_total_quantity(items):
@@ -163,13 +203,15 @@ def get_total_quantity(items):
     except Exception:
         return "See attached list"
 
-def generate_files_in_memory(data):
-    base_name = f"ACT_{data.get('act_number', 'XXX')}_PO_{data.get('po_number', 'XXX')}".replace("/", "-")
+def generate_files_in_memory(data, items_df, remarks_df):
+    po_clean = str(data.get('po_number', 'XXX')).strip()
+    act_clean = str(data.get('act_number', 'XXX')).strip()
+    base_name = f"ACT_{act_clean}_PO_{po_clean}".replace("/", "-")
     
     excel_rows = []
-    for item in data.get('items', []):
+    for _, item in items_df.iterrows():
         excel_rows.append({
-            "ACT": data.get('act_number'), "PO": data.get('po_number'), "OR": data.get('or_number'),
+            "ACT": act_clean, "PO": po_clean, "OR": data.get('or_number'),
             "Item Name [UKR]": item.get('Item Name [UKR]', ''), 
             "Item Name [ENG]": item.get('Item Name [ENG]', ''),
             "WHO Item code": item.get('WHO Item code', ''), 
@@ -184,6 +226,9 @@ def generate_files_in_memory(data):
         
     excel_buffer = io.BytesIO()
     df = pd.DataFrame(excel_rows)
+    # Гарантуємо правильний порядок колонок
+    cols_order = ["ACT", "PO", "OR", "Item Name [UKR]", "Item Name [ENG]", "WHO Item code", "WHO Catalogue Item Name", "Batch", "Exp.date", "Quantity", "Project", "Task", "Award", "Award end date", "Donor", "Requester", "WH"]
+    df = df.reindex(columns=cols_order)
     
     with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='WRR')
@@ -235,12 +280,12 @@ def generate_files_in_memory(data):
     
     header_table = doc.add_table(rows=6, cols=2)
     set_cell_text(header_table.cell(0, 0), "Purchase Order Number:")
-    set_cell_text(header_table.cell(0, 1), f"{data.get('po_number', '')}")
+    set_cell_text(header_table.cell(0, 1), po_clean)
     set_cell_text(header_table.cell(1, 0), "Registration Number:")
     set_cell_text(header_table.cell(1, 1), f"{data.get('invoice_info', '')}")
     set_cell_text(header_table.cell(2, 0), "Number of items Received:")
     
-    total_qty_str = get_total_quantity(data.get('items', []))
+    total_qty_str = get_total_quantity(items_df.to_dict('records'))
     set_cell_text(header_table.cell(2, 1), total_qty_str)
     
     set_cell_text(header_table.cell(3, 0), "Number of Parcels Received:")
@@ -270,24 +315,24 @@ def generate_files_in_memory(data):
     p_remarks = doc.add_paragraph()
     p_remarks.add_run('Remarks:').bold = True
     
-    if data.get('remark_desc'):
-        table = doc.add_table(rows=2, cols=4)
+    if not remarks_df.empty and str(remarks_df.iloc[0].get('Inconsistency description', '')).strip():
+        table = doc.add_table(rows=1, cols=4)
         table.style = 'Table Grid'
-        set_cell_text(table.rows[0].cells[0], 'Name, dosage form', bold=True)
-        set_cell_text(table.rows[0].cells[1], 'Batch#', bold=True)
-        set_cell_text(table.rows[0].cells[2], 'Quantity', bold=True)
-        set_cell_text(table.rows[0].cells[3], 'Inconsistency description', bold=True)
-        table.rows[1].cells[0].text = data.get('remark_item', '')
-        table.rows[1].cells[1].text = data.get('remark_batch', '')
-        table.rows[1].cells[2].text = data.get('remark_qty', '')
-        table.rows[1].cells[3].text = data.get('remark_desc', '')
+        headers = ['Name', 'Batch#', 'Qty', 'Inconsistency']
+        for i, h in enumerate(headers): set_cell_text(table.cell(0, i), h, True)
+        for _, r in remarks_df.iterrows():
+            row_cells = table.add_row().cells
+            row_cells[0].text = str(r.get('Item Name', ''))
+            row_cells[1].text = str(r.get('Batch', ''))
+            row_cells[2].text = str(r.get('Quantity', ''))
+            row_cells[3].text = str(r.get('Inconsistency description', ''))
     else:
         doc.add_paragraph("None")
 
     doc.save(word_buffer)
     word_buffer.seek(0)
     
-    return excel_buffer, word_buffer, base_name
+    return excel_buffer, word_buffer, po_clean, base_name
 
 st.title("📦 WHO Warehouse Automation")
 
@@ -304,6 +349,10 @@ with tab1:
             temp_file_path = temp_file.name
 
         if st.button("🤖 Process Document via AI", use_container_width=True):
+            # Очищення кешу при новому запиті
+            for key in ['extracted_data', 'wrr_ready', 'wrr_zip_data']:
+                if key in st.session_state: del st.session_state[key]
+                
             with st.spinner("Extracting data..."):
                 st.session_state['extracted_data'] = process_document_with_gemini(temp_file_path)
                 
@@ -321,13 +370,16 @@ with tab1:
                     po_number = st.text_input("PO", value=data.get("po_number", ""))
                     or_number = st.text_input("OR", value=data.get("or_number", ""))
                     donor = st.text_input("Donor", value=data.get("donor", ""))
-                    requester = st.text_input("Requester", value=data.get("requester", ""))
+                    
+                    req_choice = st.selectbox("Select Requester", options=st.session_state['requesters_list'])
+                    req_manual = st.text_input("...or type NEW Requester name (will be saved for this session):")
+                    final_req = req_manual if req_manual else req_choice
                 with col2:
                     project = st.text_input("Project", value=data.get("project", ""))
                     task = st.text_input("Task", value=data.get("task", ""))
                     award = st.text_input("Award", value=data.get("award", ""))
                     award_end_date = st.text_input("Award end date", value=data.get("award_end_date", ""))
-                    wh = st.text_input("WH (Warehouse)", value=data.get("wh", ""))
+                    wh = st.text_input("WH (Warehouse)", value="Biocon")
 
                 st.markdown("---")
                 st.markdown("**WRR Specific Fields**")
@@ -335,17 +387,8 @@ with tab1:
                 invoice_info = st.text_input("Invoice / Waybill", value=data.get("invoice_info", ""))
                 number_of_parcels = st.text_input("Number of Parcels", value=data.get("number_of_parcels", ""))
                 
-                st.markdown("**Remarks / Discrepancies**")
-                col_r1, col_r2 = st.columns(2)
-                with col_r1: 
-                    remark_item = st.text_input("Remark: Item Name", value="")
-                    remark_batch = st.text_input("Remark: Batch", value="")
-                with col_r2: 
-                    remark_qty = st.text_input("Remark: Quantity", value="")
-                    remark_desc = st.text_input("Remark: Inconsistency description", value="")
-
                 st.markdown("---")
-                st.markdown("**Items List (Editable Table)**")
+                st.markdown("**📦 Items List (Editable Table)**")
                 st.info("You can add, delete, or modify any number of rows directly in the table below.")
                 
                 items_list = data.get("items", [])
@@ -371,26 +414,31 @@ with tab1:
                 
                 edited_items_df = st.data_editor(df_items, num_rows="dynamic", use_container_width=True)
 
+                st.markdown("---")
+                st.markdown("**⚠️ Remarks Table (Discrepancies)**")
+                rem_raw = data.get("remarks_list", [{"item_name": "", "batch": "", "qty": "", "inconsistency_desc": ""}])
+                df_rem = pd.DataFrame(rem_raw).rename(columns={
+                    "item_name": "Item Name", "batch": "Batch", "qty": "Quantity", "inconsistency_desc": "Inconsistency description"
+                })
+                edited_remarks = st.data_editor(df_rem, num_rows="dynamic", use_container_width=True)
+
                 submitted = st.form_submit_button("✅ Apply Changes & Generate Files", use_container_width=True)
 
         if submitted:
-            # Очищення номерів від пробілів
-            po_number = po_number.strip()
-            act_number = act_number.strip()
+            # Збереження нового реквестера
+            if final_req and final_req not in st.session_state['requesters_list']:
+                st.session_state['requesters_list'].append(final_req)
+                st.session_state['requesters_list'].sort()
 
-            final_items = edited_items_df.to_dict('records')
             final_data = {
                 "act_number": act_number, "po_number": po_number, "or_number": or_number,
                 "project": project, "task": task, "award": award,
-                "award_end_date": award_end_date, "donor": donor, "requester": requester, 
+                "award_end_date": award_end_date, "donor": donor, "requester": final_req, 
                 "wh": wh, "supplier_name": supplier_name, "invoice_info": invoice_info,
-                "number_of_parcels": number_of_parcels,
-                "remark_item": remark_item, "remark_batch": remark_batch, 
-                "remark_qty": remark_qty, "remark_desc": remark_desc,
-                "items": final_items
+                "number_of_parcels": number_of_parcels
             }
             
-            excel_buffer, word_buffer, base_name = generate_files_in_memory(final_data)
+            excel_buffer, word_buffer, po_f, base_name = generate_files_in_memory(final_data, edited_items_df, edited_remarks)
             
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
@@ -398,9 +446,9 @@ with tab1:
                 zip_file.writestr(f"WRR_{base_name}.docx", word_buffer.getvalue())
             
             email_items_html = ""
-            for item in final_items:
+            for _, item in edited_items_df.iterrows():
                 email_items_html += f"""<tr>
-                <td style="padding: 8px;">{po_number}</td><td style="padding: 8px;">{or_number}</td><td style="padding: 8px;">{requester}</td><td style="padding: 8px;">{item.get('Item Name [ENG]', '')}</td><td style="padding: 8px;">{item.get('Batch', '')}</td><td style="padding: 8px;">{item.get('Exp.date', '')}</td><td style="padding: 8px;">{item.get('Quantity', '')}</td>
+                <td style="padding: 8px;">{po_f}</td><td style="padding: 8px;">{or_number}</td><td style="padding: 8px;">{final_req}</td><td style="padding: 8px;">{item.get('Item Name [ENG]', '')}</td><td style="padding: 8px;">{item.get('Batch', '')}</td><td style="padding: 8px;">{item.get('Exp.date', '')}</td><td style="padding: 8px;">{item.get('Quantity', '')}</td>
                 </tr>"""
 
             st.session_state['wrr_ready'] = True
@@ -408,11 +456,11 @@ with tab1:
             st.session_state['wrr_word_data'] = word_buffer.getvalue()
             st.session_state['wrr_zip_data'] = zip_buffer.getvalue()
             st.session_state['wrr_base_name'] = base_name
-            st.session_state['wrr_po_number'] = po_number
+            st.session_state['wrr_po_number'] = po_f
             st.session_state['wrr_email_html'] = f"""
             <div style="font-family: Calibri, Arial, sans-serif; font-size: 14px;">
             <p>Dear Team,</p>
-            <p>Please find attached the Warehouse Receiving Report (WRR) and Excel database for PO {po_number}.<br>
+            <p>Please find attached the Warehouse Receiving Report (WRR) and Excel database for PO {po_f}.<br>
             Goods have been successfully received at the {wh} warehouse.<br>
             The data has been extracted and transferred to Farmasoft for balance registration.</p>
             <table border="1" style="border-collapse: collapse; width: 100%; max-width: 1000px; border-color: gray;">
