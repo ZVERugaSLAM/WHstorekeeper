@@ -416,10 +416,22 @@ with tab1:
 
                 st.markdown("---")
                 st.markdown("**⚠️ Remarks Table (Discrepancies)**")
-                rem_raw = data.get("remarks_list", [{"item_name": "", "batch": "", "qty": "", "inconsistency_desc": ""}])
+                
+                # Жорстко фіксуємо структуру для Remarks Table
+                rem_raw = data.get("remarks_list", [])
+                if not rem_raw:  # Якщо ШІ повернув порожній список []
+                    rem_raw = [{"item_name": "", "batch": "", "qty": "", "inconsistency_desc": ""}]
+                    
                 df_rem = pd.DataFrame(rem_raw).rename(columns={
                     "item_name": "Item Name", "batch": "Batch", "qty": "Quantity", "inconsistency_desc": "Inconsistency description"
                 })
+                
+                cols_rem = ["Item Name", "Batch", "Quantity", "Inconsistency description"]
+                for col in cols_rem:
+                    if col not in df_rem.columns:
+                        df_rem[col] = ""
+                df_rem = df_rem[cols_rem]
+                
                 edited_remarks = st.data_editor(df_rem, num_rows="dynamic", use_container_width=True)
 
                 submitted = st.form_submit_button("✅ Apply Changes & Generate Files", use_container_width=True)
